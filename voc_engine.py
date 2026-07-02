@@ -163,7 +163,9 @@ BEHAVIORAL_DIMENSIONS = {
                 "match": ["daily", "every day", "morning", "evening", "routine", "regularly", "habit"]
             },
             "特定活动前后": {
-                "match": ["before", "after", "pre", "post", "during", "while", "when"]
+                "match": ["before and after", "right before", "right after", "pre workout",
+                         "post workout", "during my", "while i", "when i", "after using",
+                         "before using", "before going", "after waking"]
             },
             "休闲时使用": {
                 "match": ["watch tv", "relax", "leisure", "free time", "weekend", "downtime"]
@@ -178,9 +180,17 @@ BEHAVIORAL_DIMENSIONS = {
         "dim_type": "behavioral",
         "l2": {
             "中老年用户(50+)": {
-                "match": ["senior", "older", "elder", "age", "50", "60", "70", "80",
-                         "retired", "at my age", "as a", "years old", "elderly",
-                         "grandma", "grandpa", "grandparent"]
+                "match": ["senior citizen", "senior cat", "senior dog", "elderly",
+                         "retired", "at my age",
+                         "in my 50s", "in my 60s", "in my 70s", "in my 80s",
+                         "over 50", "over 60", "over 70",
+                         "grandma", "grandpa", "grandparent", "great grandma",
+                         "aging parent", "aging body", "aging joints",
+                         "old age", "getting older", "older adult", "older people",
+                         "older person", "older folks", "older couple",
+                         "old man", "old lady", "old woman",
+                         "i am 50", "i am 60", "i am 70", "i am 80",
+                         "i'm 50", "i'm 60", "i'm 70", "i'm 80"]
             },
             "父母/家庭购买者": {
                 "match": ["my kid", "my child", "my son", "my daughter", "my children", "my teenager",
@@ -316,8 +326,9 @@ BEHAVIORAL_DIMENSIONS = {
         "dim_type": "behavioral",
         "l2": {
             "健康/舒适改善": {
-                "match": ["feel better", "improvement", "relief", "no more", "stopped", "helped",
-                         "comfortable", "better", "healthier"]
+                "match": ["feel better", "improvement", "relief", "no more pain", "stopped hurting",
+                         "helped with", "comfortable", "healthier", "feeling better", "much better now",
+                         "so much better", "feels so much", "no longer"]
             },
             "时间/效率提升": {
                 "match": ["save time", "faster", "quick", "efficient", "convenient", "easy"]
@@ -478,6 +489,32 @@ DEFAULT_COLORS = [
 ]
 
 # ============================================================
+# 3.5 关键词词边界匹配（避免子串误匹配，如 age->package, older->holder）
+# ============================================================
+_KW_PATTERN_CACHE = {}
+
+
+def _kw_in_text(kw, text):
+    """
+    词边界匹配：关键词必须作为完整词/短语出现，而非任意子串。
+    修复历史 bug：短词 'age' 命中 package/usage/damage，'older' 命中 holder，
+    'aging' 命中 packaging，导致所有品类报告的用户画像都错误偏向"中老年用户"。
+
+    - 首尾为字母/数字的关键词用 \\b 词边界包裹
+    - 含空格的短语（如 'before and after'）同样按词边界匹配，内部空格允许任意空白
+    """
+    pat = _KW_PATTERN_CACHE.get(kw)
+    if pat is None:
+        # 关键词内部空白归一化为 \s+，允许 "over  50" / 换行等
+        escaped = r"\s+".join(re.escape(part) for part in kw.split())
+        left = r"\b" if kw[:1].isalnum() else ""
+        right = r"\b" if kw[-1:].isalnum() else ""
+        pat = re.compile(left + escaped + right)
+        _KW_PATTERN_CACHE[kw] = pat
+    return pat.search(text) is not None
+
+
+# ============================================================
 # 4. 标签提取主函数
 # ============================================================
 def extract_tags(df, tag_system, product_name="产品", progress_callback=None):
@@ -512,7 +549,7 @@ def extract_tags(df, tag_system, product_name="产品", progress_callback=None):
                 combo_key = f"{l1_name}|{l2_name}"
                 if combo_key in tagged_combos:
                     continue
-                matched_kw = [kw for kw in l2_config.get("match", []) if kw in full_text]
+                matched_kw = [kw for kw in l2_config.get("match", []) if _kw_in_text(kw, full_text)]
                 if not matched_kw:
                     continue
                 sentiment = determine_tag_sentiment(full_text, rating, matched_kw)
@@ -809,110 +846,107 @@ def auto_generate_insights(tags_data, product_name):
 
 
 def _generate_personas(tags_data, product_name):
-    """基于标签自动推断用户画像"""
-    personas = []
-
-    # 从标签中寻找线索
+    """
+    完全数据驱动：从实际打标的 '👤 用户画像' 维度提取真实画像。
+    不再使用硬编码模板，避免出现不适配品类的画像（如猫抓板的"便携/移动需求用户"）。
+    """
+    from collections import defaultdict
     tags = tags_data.get("tags", [])
-    all_text = " ".join([t.get("quote", "") for t in tags]).lower()
 
-    # 通用画像模板
-    templates = [
-        {
-            "name": "核心功能用户", "icon": "🎯",
-            "desc": f"最关注{product_name}核心功能的用户群体。他们追求最佳使用效果，对功能表现有较高要求。",
-            "triggers": ["effective", "works well", "great", "excellent", "best"],
-        },
-        {
-            "name": "便携/移动需求用户", "icon": "✈️",
-            "desc": f"经常出行、需要随时随地使用{product_name}的用户。看重便携性和续航能力。",
-            "triggers": ["travel", "portable", "cordless", "carry", "bag", "trip"],
-        },
-        {
-            "name": "性价比导向用户", "icon": "💰",
-            "desc": f"关注{product_name}价格与价值平衡的用户。会在不同品牌和型号间对比，追求最优性价比。",
-            "triggers": ["price", "worth", "value", "expensive", "cheap", "cost"],
-        },
-        {
-            "name": "新手/入门用户", "icon": "🌱",
-            "desc": f"首次使用{product_name}的用户。关注易用性、上手难度和学习成本。",
-            "triggers": ["first time", "easy to use", "simple", "learning", "new to"],
-        },
-        {
-            "name": "专业人士推荐型用户", "icon": "🧑‍⚕️",
-            "desc": f"受专业人士推荐而购买{product_name}的用户。品牌信任度高，忠诚度强。",
-            "triggers": ["recommended by", "dentist", "doctor", "professional", "prescribed"],
-        },
-        {
-            "name": "升级换代用户", "icon": "🔄",
-            "desc": f"从旧款或其他品牌升级到{product_name}的用户。关注新功能、性能提升和体验改善。",
-            "triggers": ["upgrade", "old", "previous", "replaced", "new version"],
-        },
-    ]
+    # 各 L2 用户画像标签的 icon 映射（品类通用）
+    persona_icons = {
+        "中老年用户(50+)": "👴", "父母/家庭购买者": "👨‍👩‍👧", "商务/差旅人士": "💼",
+        "新手/首次使用者": "🌱", "重度/资深用户": "⭐", "科技数码爱好者": "🔧",
+        "性价比/精明消费者": "💰", "礼物购买者": "🎁", "专业需求用户": "🧑‍⚕️",
+    }
 
-    # 过滤出与数据匹配的画像
-    matched = []
-    for tmpl in templates:
-        score = sum(1 for t in tmpl["triggers"] if t in all_text)
-        if score >= 2:
-            matched.append(tmpl)
+    # 聚合 👤 用户画像 维度下的 L2 标签
+    persona_stats = defaultdict(lambda: {"total": 0, "positive": 0, "quotes": []})
+    for t in tags:
+        if "用户画像" in t.get("l1", ""):
+            l2 = t.get("l2", "")
+            persona_stats[l2]["total"] += 1
+            if t.get("sentiment") == "positive":
+                persona_stats[l2]["positive"] += 1
+            q = t.get("quote", "").strip()
+            if q and len(q) > 15 and len(persona_stats[l2]["quotes"]) < 2:
+                persona_stats[l2]["quotes"].append(q)
 
-    # 至少保留4个画像
-    if len(matched) < 4:
-        # 添加通用画像
-        generic = [
-            {"name": "日常高频用户", "icon": "🏠",
-             "desc": f"将{product_name}纳入日常生活习惯的用户。使用频率高，对产品耐用性要求高。",
-             "triggers": ["daily", "every day", "routine", "always"]},
-            {"name": "品质追求用户", "icon": "⭐",
-             "desc": f"对{product_name}品质和体验有高要求的用户。愿意为优质产品支付溢价。",
-             "triggers": ["quality", "premium", "excellent", "perfect"]},
-        ]
-        for g in generic:
-            if len(matched) < 6:
-                matched.append(g)
+    # 按提及次数排序，取真实存在的画像
+    sorted_personas = sorted(persona_stats.items(), key=lambda x: -x[1]["total"])
 
-    # 限制为6个
-    personas = matched[:6]
+    personas = []
+    for l2_name, stat in sorted_personas[:6]:
+        if stat["total"] < 1:
+            continue
+        pos_rate = round(stat["positive"] / stat["total"] * 100) if stat["total"] > 0 else 0
+        personas.append({
+            "name": l2_name,
+            "icon": persona_icons.get(l2_name, "👤"),
+            "desc": f"该群体在评论中被提及 {stat['total']} 次，正面率 {pos_rate}%。"
+                    f"是{product_name}的重要目标用户之一，值得针对性运营。",
+            "quotes": stat["quotes"],
+        })
 
-    # 为每个画像补充示例quote
-    for p in personas:
-        p["quotes"] = _find_relevant_quotes(tags, p.get("triggers", []), 2)
+    # 数据不足时的兜底（仍基于真实数据，仅提示）
+    if not personas:
+        personas.append({
+            "name": "核心用户群", "icon": "👤",
+            "desc": f"当前评论中用户画像维度标签较少，建议补充更多评论数据以获得精准画像。",
+            "quotes": [],
+        })
 
     return personas
 
 
 def _generate_scenarios(tags_data, product_name):
-    """自动生成使用场景"""
+    """
+    完全数据驱动：从实际打标的 '📍 使用地点' + '⏰ 使用场景' 维度提取真实场景。
+    不再使用硬编码模板（如冲牙器的"旅行/出差场景"）。
+    """
+    from collections import defaultdict
     tags = tags_data.get("tags", [])
-    all_text = " ".join([t.get("quote", "") for t in tags]).lower()
 
-    scenario_templates = [
-        {"name": f"日常{product_name}使用", "icon": "🪥",
-         "desc": f"最主流的使​用场景，用户将{product_name}作为日常生活的一部分。",
-         "triggers": ["daily", "every day", "routine", "morning", "night"]},
-        {"name": "旅行/出差场景", "icon": "✈️",
-         "desc": f"用户需要在旅途中使用{product_name}。便携性、续航和收纳是关键需求。",
-         "triggers": ["travel", "trip", "vacation", "hotel", "abroad"]},
-        {"name": "特殊需求场景", "icon": "🎯",
-         "desc": f"特殊需求用户使用{product_name}的场景。这类用户通常由专业渠道引导购买。",
-         "triggers": ["braces", "implant", "sensitive", "special", "medical"]},
-        {"name": "家庭共享场景", "icon": "👨‍👩‍👧‍👦",
-         "desc": f"家庭成员共用{product_name}的场景。关注多人使用的便利性和卫生。",
-         "triggers": ["family", "husband", "wife", "kid", "everyone"]},
-    ]
+    # 场景 L2 标签的 icon 映射（品类通用）
+    scenario_icons = {
+        "家庭/室内": "🏠", "户外/露营/房车": "🏕️", "办公室/工作场所": "🏢",
+        "健身房/运动场": "💪", "日常例行": "📅", "特定活动前后": "⏰",
+        "休闲时使用": "🛋️", "特殊场合/需求": "🎯",
+    }
 
-    matched = []
-    for tmpl in scenario_templates:
-        score = sum(1 for t in tmpl["triggers"] if t in all_text)
-        if score >= 1:
-            matched.append(tmpl)
+    # 聚合 使用地点 + 使用场景 维度下的 L2 标签
+    scenario_stats = defaultdict(lambda: {"total": 0, "positive": 0, "l1": ""})
+    for t in tags:
+        l1 = t.get("l1", "")
+        if "使用地点" in l1 or "使用场景" in l1:
+            l2 = t.get("l2", "")
+            scenario_stats[l2]["total"] += 1
+            scenario_stats[l2]["l1"] = l1
+            if t.get("sentiment") == "positive":
+                scenario_stats[l2]["positive"] += 1
 
-    if len(matched) < 2:
-        matched.append(scenario_templates[0])
-        matched.append(scenario_templates[1])
+    sorted_scenarios = sorted(scenario_stats.items(), key=lambda x: -x[1]["total"])
 
-    return matched[:4]
+    scenarios = []
+    for l2_name, stat in sorted_scenarios[:4]:
+        if stat["total"] < 1:
+            continue
+        pos_rate = round(stat["positive"] / stat["total"] * 100) if stat["total"] > 0 else 0
+        dim_type = "使用地点" if "使用地点" in stat["l1"] else "使用时机"
+        scenarios.append({
+            "name": l2_name,
+            "icon": scenario_icons.get(l2_name, "📍"),
+            "desc": f"【{dim_type}】评论中被提及 {stat['total']} 次，正面率 {pos_rate}%。"
+                    f"是{product_name}的核心使用场景，可用于场景化营销和网站视觉设计。",
+        })
+
+    if not scenarios:
+        scenarios.append({
+            "name": "日常使用场景", "icon": "🏠",
+            "desc": f"当前评论中使用场景维度标签较少，建议补充更多评论数据。",
+        })
+
+    return scenarios
 
 
 def _generate_recommendations(pain_points, strengths_list, product_name):
